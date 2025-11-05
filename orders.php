@@ -1,89 +1,125 @@
 <?php
 require_once '../includes/config.php';
 require_once '../includes/session.php';
-require_once '../includes/functions.php'; // for e()
-require_login();
+require_once '../includes/functions.php';
+require_admin();
 include '../includes/header.php';
 
-$user_id = $_SESSION['user_id'];
+// Fetch orders with product info
+$sql = "
+SELECT 
+  o.order_id,
+  o.total_amount,
+  o.delivery_date,
+  o.order_status,
+  o.order_date,
+  c.full_name,
+  u.email,
+  i.item_name,
+  i.img_path,
+  oi.quantity
+FROM orders o
+JOIN users u ON o.user_id = u.user_id
+LEFT JOIN customer_info c ON u.user_id = c.user_id
+JOIN order_items oi ON o.order_id = oi.order_id
+JOIN item i ON oi.item_id = i.item_id
+ORDER BY o.order_date DESC, o.order_id DESC
+";
 
-// Fetch orders with payment info (LEFT JOIN)
-$sql = "SELECT o.order_id, o.total_amount, o.delivery_date, o.order_status, o.order_date,
-               p.payment_method, p.payment_status, p.transaction_date
-        FROM orders o
-        LEFT JOIN payments p ON o.order_id = p.order_id
-        WHERE o.user_id = ?
-        ORDER BY o.order_date DESC";
+$result = mysqli_query($conn, $sql);
 
-$stmt = mysqli_prepare($conn, $sql);
-mysqli_stmt_bind_param($stmt, 'i', $user_id);
-mysqli_stmt_execute($stmt);
-$result = mysqli_stmt_get_result($stmt);
+// ✅ Group by order_id and combine same products
+$orders = [];
+while ($row = mysqli_fetch_assoc($result)) {
+  $oid = $row['order_id'];
+  $item_name = $row['item_name'];
+
+  // Initialize order if not yet set
+  if (!isset($orders[$oid])) {
+    $orders[$oid] = [
+      'order_id' => $oid,
+      'total_amount' => $row['total_amount'],
+      'delivery_date' => $row['delivery_date'],
+      'order_status' => $row['order_status'],
+      'order_date' => $row['order_date'],
+      'full_name' => $row['full_name'],
+      'email' => $row['email'],
+      'items' => []
+    ];
+  }
+
+  // If same product exists in this order, combine quantity
+  if (isset($orders[$oid]['items'][$item_name])) {
+    $orders[$oid]['items'][$item_name]['quantity'] += $row['quantity'];
+  } else {
+    $orders[$oid]['items'][$item_name] = [
+      'name' => $item_name,
+      'img' => $row['img_path'],
+      'quantity' => $row['quantity']
+    ];
+  }
+}
 ?>
 
-<div class="orders-container">
-  <h2 class="page-title">📦 My Orders</h2>
+<div class="orders-admin-container">
+  <h2 class="page-title">🧾 Manage Orders</h2>
 
-  <?php if (mysqli_num_rows($result) > 0): ?>
+  <?php if (!empty($orders)): ?>
   <div class="table-wrapper">
     <table class="orders-table">
       <thead>
         <tr>
           <th>Order ID</th>
+          <th>Products</th>
+          <th>Customer</th>
+          <th>Email</th>
           <th>Total</th>
           <th>Delivery Date</th>
-          <th>Order Status</th>
-          <th>Payment Status</th>
-          <th>Payment Method</th>
+          <th>Status</th>
+          <th>Payment</th>
           <th>Placed On</th>
-          <th>Action</th>
+          <th>Actions</th>
         </tr>
       </thead>
       <tbody>
-        <?php while($row = mysqli_fetch_assoc($result)): ?>
-          <?php
-            $order_id = $row['order_id'];
-            $payment_status = $row['payment_status'] ?? 'Unpaid';
-            $payment_method = $row['payment_method'] ?? '-';
-
-            // Auto-mark as paid if payment record exists
-            if ($payment_status === 'Paid' && $row['order_status'] === 'Pending') {
-                mysqli_query($conn, "UPDATE orders SET order_status = 'Preparing' WHERE order_id = $order_id");
-                $row['order_status'] = 'Preparing';
-            }
-          ?>
-          <tr>
-            <td>#<?php echo e($order_id); ?></td>
-            <td><strong>₱<?php echo number_format($row['total_amount'], 2); ?></strong></td>
-            <td><?php echo e($row['delivery_date']); ?></td>
-            <td>
-              <span class="status <?php echo strtolower($row['order_status']); ?>">
-                <?php echo e($row['order_status']); ?>
-              </span>
-            </td>
-            <td>
-              <span class="status <?php echo strtolower($payment_status); ?>">
-                <?php echo e($payment_status); ?>
-              </span>
-            </td>
-            <td><?php echo e($payment_method); ?></td>
-            <td><?php echo date('M d, Y', strtotime($row['order_date'])); ?></td>
-            <td>
-              <?php if ($payment_status === 'Unpaid'): ?>
-                <a href="payment.php?order_id=<?php echo $order_id; ?>" class="button success small">Pay Now</a>
-              <?php elseif (strtolower($row['order_status']) === 'pending'): ?>
-                <a href="delete_order.php?id=<?php echo $order_id; ?>" class="button danger small">Cancel</a>
-              <?php else: ?>
-                <span class="locked">Locked</span>
-              <?php endif; ?>
-            </td>
-          </tr>
-        <?php endwhile; ?>
+        <?php foreach ($orders as $order): ?>
+        <tr>
+          <td>#<?php echo e($order['order_id']); ?></td>
+          <td>
+            <?php foreach ($order['items'] as $item): ?>
+              <div class="order-product" style="margin-bottom:5px;">
+                <img src="../uploads/products/<?php echo e($item['img']); ?>" 
+                     alt="<?php echo e($item['name']); ?>" 
+                     width="50" height="50" 
+                     style="border-radius:8px;">
+                <div>
+                  <strong><?php echo e($item['name']); ?></strong><br>
+                  <small>Qty: <?php echo e($item['quantity']); ?></small>
+                </div>
+              </div>
+            <?php endforeach; ?>
+          </td>
+          <td><?php echo e($order['full_name'] ?: 'N/A'); ?></td>
+          <td><?php echo e($order['email']); ?></td>
+          <td><strong>₱<?php echo number_format($order['total_amount'], 2); ?></strong></td>
+          <td><?php echo e($order['delivery_date']); ?></td>
+          <td>
+            <span class="status <?php echo strtolower($order['order_status']); ?>">
+              <?php echo e($order['order_status']); ?>
+            </span>
+          </td>
+          <td><span class="payment-status pending">Pending</span></td>
+          <td><?php echo date('M d, Y', strtotime($order['order_date'])); ?></td>
+          <td>
+            <a href="order_update.php?id=<?php echo $order['order_id']; ?>" class="button small">✏️ Update</a>
+          </td>
+        </tr>
+        <?php endforeach; ?>
       </tbody>
     </table>
   </div>
   <?php else: ?>
-    <p class="no-items">You haven’t placed any orders yet. <a href="../index.php">Start shopping now!</a></p>
+    <p class="no-items">No orders have been placed yet.</p>
   <?php endif; ?>
 </div>
 
